@@ -2,8 +2,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, Trainer, TrainingArgume
 from datasets import load_dataset
 import logging
 import os
-import shutil
-from pathlib import Path
+import json
 import tempfile
 import time
 
@@ -28,13 +27,17 @@ logger.info(f"Training data loaded with {len(dataset['train'])} examples.")
 # Initialize the tokenizer and model
 logger.info("Initializing tokenizer and model...")
 
-def load_tokenizer_model(retries=3):
+def load_tokenizer_model(retries=3, output_dir="./results/latest"):
     for attempt in range(retries):
         try:
             tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
             # Set padding token
             tokenizer.pad_token = tokenizer.eos_token
-            model = GPT2LMHeadModel.from_pretrained('gpt2')
+            if os.path.exists(output_dir):
+                model = GPT2LMHeadModel.from_pretrained(output_dir)
+                logger.info("Resuming from the last saved model")
+            else:
+                model = GPT2LMHeadModel.from_pretrained('gpt2')
             return tokenizer, model
         except Exception as e:
             logger.error(f"Error initializing tokenizer or model on attempt {attempt + 1}: {e}")
@@ -51,14 +54,9 @@ except Exception as e:
 
 logger.info("Tokenizer and model initialized.")
 
-# Set the temporary directory for dataset processing
-temp_dir = './temp_dataset_cache'
-os.makedirs(temp_dir, exist_ok=True)
-
 # Tokenize the data
 logger.info("Tokenizing the dataset...")
-with tempfile.TemporaryDirectory(dir=temp_dir) as tmp_dir:
-    tokenized_datasets = dataset.map(preprocess_function, batched=True, remove_columns=["text"])
+tokenized_datasets = dataset.map(preprocess_function, batched=True, remove_columns=["text"])
 logger.info("Dataset tokenized.")
 
 # Set up data collator with padding
@@ -74,24 +72,36 @@ training_args = TrainingArguments(
     per_device_train_batch_size=4,  # Adjust based on GPU memory
     per_device_eval_batch_size=4,  # Adjust based on GPU memory
     num_train_epochs=3,
-    save_steps=10_000,
+    save_steps=5000,  # Set to a large number to avoid saving checkpoints
     save_total_limit=2,
     fp16=True,  # Enable mixed precision training
     dataloader_num_workers=4,  # Increase number of workers for data loading
     logging_dir="./logs",  # Directory for storing logs
     gradient_accumulation_steps=1,  # Accumulate gradients over multiple steps (optional)
     max_grad_norm=1.0,  # Gradient clipping to prevent exploding gradients
+    logging_steps=50,  # Log every 50 steps
 )
 
 logger.info("Training arguments set.")
 
-# Custom callback to save model at the end of each epoch
-class SaveModelCallback(TrainerCallback):
-    def on_epoch_end(self, args, state, control, **kwargs):
-        logger.info(f"Saving model at the end of epoch {state.epoch}")
-        output_dir = os.path.join(args.output_dir, f"epoch_{int(state.epoch)}")
-        kwargs['model'].save_pretrained(output_dir)
-        kwargs['tokenizer'].save_pretrained(output_dir)
+# Custom callback to save model and log metrics at each specified step
+class SaveModelStepCallback(TrainerCallback):
+    def __init__(self, save_steps=100, tokenizer=None):
+        self.save_steps = save_steps
+        self.tokenizer = tokenizer
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if state.global_step % self.save_steps == 0 and state.global_step > 0:
+            logger.info(f"Saving model and logging metrics at step {state.global_step}")
+            output_dir = os.path.join(args.output_dir, "latest")
+            kwargs['model'].save_pretrained(output_dir)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+            
+            # Save logs to a file
+            logs_output_file = os.path.join(output_dir, "metrics.json")
+            with open(logs_output_file, 'w') as f:
+                json.dump(logs, f)
 
 # Create Trainer instance
 logger.info("Creating Trainer instance...")
@@ -100,7 +110,7 @@ trainer = Trainer(
     args=training_args,
     train_dataset=tokenized_datasets["train"],
     data_collator=data_collator,
-    callbacks=[SaveModelCallback()],
+    callbacks=[SaveModelStepCallback(save_steps=100, tokenizer=tokenizer)],  # Pass the tokenizer to the callback
 )
 logger.info("Trainer instance created.")
 
@@ -118,5 +128,5 @@ logger.info("Final model saved.")
 # Evaluate the model
 logger.info("Evaluating the model...")
 eval_results = trainer.evaluate()
-logger.info(f"Model evaluation completed. Perplexity: {eval_results['perplexity']}")
-print(f"Perplexity: {eval_results['perplexity']}")
+logger.info(f"Model evaluation completed. Perplexity: {eval_results.get('perplexity', 'N/A')}")
+print(f"Perplexity: {eval_results.get('perplexity', 'N/A')}")

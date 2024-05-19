@@ -167,3 +167,4 @@ training/dataset_cache/
 training/dataset_cache/
 training/results/
 training/logs/
+fine_tuned/
