@@ -163,3 +163,7 @@ cython_debug/
 */data/*
 data-scrape/setup.py
 data-scrape/data-19-may.zip
+training/dataset_cache/
+training/dataset_cache/
+training/results/
+training/logs/
