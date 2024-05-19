@@ -15,7 +15,7 @@ headers = {
     "Authorization": f"token {GITHUB_TOKEN}"
 }
 
-def get_github_repos(language, topic, stars, per_page=10, page=2):
+def get_github_repos(language, topic, stars, per_page=10, page=3):
     try:
         url = f"https://api.github.com/search/repositories?q=language:{language}+topic:{topic}+stars:>{stars}&sort=stars&order=desc&per_page={per_page}&page={page}"
         response = requests.get(url, headers=headers)
